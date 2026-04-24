@@ -28,7 +28,8 @@ load_dotenv()
 
 # ── CONFIGURATION ─────────────────────────────────────────────────────────────
 # Where our chunk JSON files live (created by chunker.py)
-CHUNK_DIR = Path("data/chunks")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+CHUNK_DIR = PROJECT_ROOT / "data" / "chunks"
 
 # The Bedrock model that converts text → numbers
 # Titan Embed v2 produces 1024-dimensional vectors
