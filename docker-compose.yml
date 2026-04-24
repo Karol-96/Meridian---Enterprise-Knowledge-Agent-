@@ -1,0 +1,17 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: meridian-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: meridian
+    ports:
+      - "5432:5432"
+    volumes:
+      - meridian_pgdata:/var/lib/postgresql/data
+
+volumes:
+  meridian_pgdata:
