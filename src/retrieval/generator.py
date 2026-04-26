@@ -4,16 +4,14 @@ import json
 import os
 from dotenv import load_dotenv
 from pathlib import Path
-import anthropic
-
-
+from openai import OpenAI
 
 
 
 
 load_dotenv(dotenv_path=Path(__file__).parent.parent.parent/".env")
 
-CHAT_MODEL= "claude-3-5-sonnet-20241022"
+CHAT_MODEL= "gpt-4o"
 
 
 
@@ -23,19 +21,19 @@ MAX_TOKENS = 2048
 TEMPERATURE = 0.1
 
 
-#Anthropic Client
+#OpenAI Client
 
-client = anthropic.Client(
-    api_key=os.getenv('ANTHROPIC_API_KEY') )
-
-
+client = OpenAI(
+    api_key=os.getenv('OPENAI_API_KEY'))
 
 
-SYSTEM_PROMPT = """You are Meridian, an enterprise knowledge agent 
-specialising in Apache software documentation — specifically 
+
+
+SYSTEM_PROMPT = """You are Meridian, an enterprise knowledge agent
+specialising in Apache software documentation — specifically
 Apache Kafka, Apache Flink, and Apache Airflow.
 
-You help software engineers find accurate, reliable answers 
+You help software engineers find accurate, reliable answers
 from their official documentation.
 
 RULES — follow these strictly every time:
@@ -60,7 +58,7 @@ def format_context(chunks:list[dict])-> tuple[str,list[dict]]:
         context_parts.append(
             f"[Source {i} - {chunk['page_title']}]\n"
             f"Space: {chunk['space_key']}\n"
-            f"chunk['text']\n"
+            f"{chunk['text']}\n"
         )
 
         sources.append({
@@ -70,15 +68,15 @@ def format_context(chunks:list[dict])-> tuple[str,list[dict]]:
             "url":        chunk["url"],
         })
 
-        context_string = "\n---\n".join(context_parts)
-        return context_string
-    
+    context_string = "\n---\n".join(context_parts)
+    return context_string, sources
+
 
 
 
 def build_user_message(question: str, context: str) -> str:
-    return f"""CONTEXT: 
-{context}       
+    return f"""CONTEXT:
+{context}
 QUESTION:
 {question}
 ANSWER:"""
@@ -93,62 +91,67 @@ async def generate(question: str, chunks: list[dict]) -> dict:
 
 
     response = await asyncio.to_thread(
-        client.messages.create,
-        model + CHAT_MODEL,
-        max_tokens = MAX_TOKENS,
-        system = SYSTEM_PROMPT,
-        messages = [
+        client.chat.completions.create,
+        model=CHAT_MODEL,
+        max_tokens=MAX_TOKENS,
+        messages=[
             {
-                "role" : "user",
-                "content" : user_message 
+                "role": "system",
+                "content": SYSTEM_PROMPT
+            },
+            {
+                "role": "user",
+                "content": user_message
             }
         ],
-        temperature = TEMPERATURE
+        temperature=TEMPERATURE
 
     )
 
-    answer_text = response.content[0].text
+    answer_text = response.choices[0].message.content
 
     return {
         "question": question,
         "answer": answer_text,
-        "sources" : sources,
+        "sources": sources,
         "usage": {
-            "prompt_tokens": response.usage.prompt_tokens,
-            "completion_tokens": response.usage.completion_tokens,
+            "input_tokens": response.usage.prompt_tokens,
+            "output_tokens": response.usage.completion_tokens,
             "total_tokens": response.usage.total_tokens
         }
     }
 
 
 
-async def generate_stream(question : str, chunks: list[dict]):
+async def generate_stream(question: str, chunks: list[dict]):
 
     context, sources = format_context(chunks)
-    user_message =  build_user_message(question, context)
+    user_message = build_user_message(question, context)
 
 
     queue = asyncio.Queue()
 
     def run_stream():
-        with client.messages.stream(
+        stream = client.chat.completions.create(
             model=CHAT_MODEL,
             max_tokens=MAX_TOKENS,
-            system=SYSTEM_PROMPT,
-            messages=[{
-                "role":    "user",
-                "content": user_message
-            }],
+            messages=[
+                {
+                    "role": "system",
+                    "content": SYSTEM_PROMPT
+                },
+                {
+                    "role": "user",
+                    "content": user_message
+                }
+            ],
             temperature=TEMPERATURE,
-        ) as stream:
-            # text_stream automatically yields text pieces
-            # No manual event parsing needed
-            for text_piece in stream.text_stream:
-                # put_nowait = add to queue without waiting
-                # The async generator will pick this up
-                queue.put_nowait(text_piece)
+            stream=True,
+        )
+        for chunk in stream:
+            if chunk.choices[0].delta.content:
+                queue.put_nowait(chunk.choices[0].delta.content)
 
-        # None signals "streaming is complete"
         queue.put_nowait(None)
 
 
@@ -192,19 +195,19 @@ async def rag(question:str, space_key: str = None) -> dict:
             "answer": "I couldn't find this in the available documentation.",
             "sources": [],
             "usage": {
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
                 "total_tokens": 0
             }
-        }   
-    
+        }
+
     #STEP 2: AUGEMENTED GENERATION
 
     print(f" [RAG] Generating answer using {len(chunks)} retrieved chunks as context.")
     result = await generate(question, chunks)
 
 
-    print(f" [RAG] Generation complete. Answer length: {len(result['answer'])} characters. Total tokens used: {result['usage']['total_tokens']}")
+    print(f" [RAG] Generation complete. Answer length: {len(result['answer'])} chars. Tokens: {result['usage']['total_tokens']}")
 
     return result
 
@@ -216,16 +219,16 @@ async def test_generator():
     End-to-end test — 3 scenarios.
     Run with: python3 -m src.retrieval.generator
     """
- 
-    print("\nMeridian Generator — Anthropic API Test")
+
+    print("\nMeridian Generator — OpenAI API Test")
     print("=" * 55)
- 
+
     # TEST 1: Non-streaming full answer
     print("\n[TEST 1] Non-streaming full answer")
     print("-" * 55)
- 
+
     result = await rag("How does Kafka handle replication?")
- 
+
     print(f"\nQuestion : {result['question']}")
     print(f"\nAnswer:\n{result['answer']}")
     print(f"\nSources:")
@@ -233,40 +236,38 @@ async def test_generator():
         print(f"  [{s['number']}] {s['page_title']}")
         print(f"         {s['url']}")
     print(f"\nToken usage: {result['usage']}")
- 
+
     # TEST 2: Streaming word by word
     print("\n\n[TEST 2] Streaming — word by word")
     print("-" * 55)
- 
+
     from src.retrieval.retriever import retrieve
- 
+
     question = "What is the checkpoint mechanism in Flink?"
     chunks   = await retrieve(question)
- 
+
     print(f"\nQuestion : {question}")
     print(f"\nAnswer (streaming):")
     print("-" * 30)
- 
-    # async for = iterate over async generator
-    # end="" + flush=True = print each piece immediately without newline
+
     async for text_piece in generate_stream(question, chunks):
         print(text_piece, end="", flush=True)
- 
+
     print()
- 
+
     # TEST 3: Space-filtered search
     print("\n\n[TEST 3] Airflow-only space filter")
     print("-" * 55)
- 
+
     result = await rag(
         "How do you schedule a DAG in Airflow?",
         space_key="AIRFLOW"
     )
- 
+
     print(f"\nQuestion : {result['question']}")
     print(f"\nAnswer:\n{result['answer']}")
- 
- 
+
+
 # ── ENTRY POINT ───────────────────────────────────────────────────────────────
 #
 # if __name__ == "__main__":
